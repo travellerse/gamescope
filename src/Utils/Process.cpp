@@ -100,20 +100,49 @@ namespace gamescope::Process
         return nPids;
     }
 
-    void KillProcessTree( std::vector<pid_t> nPids, int nSignal )
+    void KillProcessTree( const std::vector<pid_t> nPids, int nSignal )
     {
         for ( pid_t nPid : nPids )
-        {
-            auto nChildPids = GetChildPids( nPid );
             KillProcess( nPid, nSignal );
-            KillProcessTree( nChildPids, nSignal );
+
+        constexpr int kMaxRetries = 30;
+        constexpr useconds_t kRetryDelayUs = 100000;
+
+        for ( pid_t nPid : nPids )
+        {
+            bool bReaped = false;
+            for ( int i = 0; i < kMaxRetries; i++ )
+            {
+                pid_t nResult = waitpid( nPid, nullptr, WNOHANG );
+                if ( nResult == nPid )
+                {
+                    bReaped = true;
+                    break;
+                }
+                if ( nResult == -1 && errno == ECHILD )
+                {
+                    bReaped = true;
+                    break;
+                }
+                usleep( kRetryDelayUs );
+            }
+            if ( !bReaped )
+            {
+                KillProcess( nPid, SIGKILL );
+                waitpid( nPid, nullptr, WNOHANG );
+            }
         }
     }
 
     void KillAllChildren( pid_t nParentPid, int nSignal )
     {
-        std::vector<pid_t> nChildPids = GetChildPids( nParentPid );
-        return KillProcessTree( nChildPids, nSignal );
+        for (;;)
+        {
+            std::vector<pid_t> nChildPids = GetChildPids( nParentPid );
+            if ( nChildPids.empty() )
+                break;
+            KillProcessTree( nChildPids, nSignal );
+        }
     }
 
     void KillProcess( pid_t nPid, int nSignal )
